@@ -1,0 +1,4 @@
+# Backups of earlier versions kept beside the script
+*.bak-*
+__pycache__/
+*.pyc
