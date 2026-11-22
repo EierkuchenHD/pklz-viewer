@@ -11,6 +11,14 @@ databases that [WerZatSong](https://github.com/Nel80s/WerZatSong) searches.
   the buckets are, the settings, and whether the checksum was verified.
 - **The tracks:** every entry with its hash count. You can filter, sort, and
   copy the list.
+- **Where each track came from:** the Source column links an entry to its
+  source when its name or the table's name says what that is.
+  - Exact: a YouTube video (an id in the name), a WatZatSong post, a
+    SoundCloud track, a Wayback capture.
+  - Otherwise the channel or collection it came from, or a search on the
+    right site (Bandcamp, archive.org).
+  - **Open source** or the right-click menu opens it. The right-click menu can
+    also copy the link or the name.
 - **The hashes of one entry:** select an entry and click **Show hashes**, or
   double-click it. Each hash is a pair of peaks in the song's spectrogram. It
   is drawn as a line from the first peak to the second, with time across and
@@ -43,6 +51,7 @@ pythonw pklz_viewer.pyw                             open the window and pick a f
 python  pklz_viewer.pyw --check <file...>           one summary line per file, no window
 python  pklz_viewer.pyw --hashes <file> <entry #|biggest> [picture.png]
                                                     one entry's hashes in figures (and a picture)
+python  pklz_viewer.pyw --sources <file...>         every entry's source link
 python  pklz_viewer.pyw --register                  add it to Explorer's "Open with" for .pklz
 python  pklz_viewer.pyw --unregister                take it out again
 ```

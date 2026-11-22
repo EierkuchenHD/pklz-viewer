@@ -6,6 +6,7 @@
     python  pklz_viewer.pyw --hashes <file.pklz> <entry #|biggest> [picture.png]
                                                no window: one entry's hashes in figures,
                                                drawn into a PNG as well if one is named
+    python  pklz_viewer.pyw --sources <file...> no window: every entry's source link
     python  pklz_viewer.pyw --register         add it to Explorer's "Open with" menu for .pklz (this user only)
     python  pklz_viewer.pyw --unregister       take it out again
 
@@ -15,6 +16,10 @@ a line from the first peak (time, frequency) to the second, coloured by how
 often the same hash occurs anywhere in the table: the rare ones are what make
 the entry findable. Under it, how many hashes each stretch of the entry has.
 The picture follows the selection in the list; Up/Down in it moves on.
+
+The Source column says where an entry came from when its name or the table's
+name tells: a YouTube video (an id in the name), a WatZatSong post, a channel,
+a Bandcamp search and so on. "Open source" or the right-click menu opens it.
 
 Files are opened with WerZatSong's own loader, which only lets hash-table data
 through: a .pklz is a pickle, and a plain pickle.load() of a downloaded file
@@ -74,6 +79,244 @@ def read_pklz(path):
     }
     table.__dict__.clear()
     return info, tracks
+
+
+# ── Where an entry came from ────────────────────────────────────────────────
+#
+# A port of sourcelink.js, the rules that link WerZatSong's match results to their
+# source; keep the two in step. They were worked out on a real corpus of matched
+# files. Three tiers, and the label says which:
+#   exact   the link lands on that track (an id survives in the name or path)
+#   source  the channel or collection it came from (no per-track id survives)
+#   search  the platform is known, the track is not: a scoped search
+# No evidence, no link: an invented link that 404s is worse than none.
+
+import re as _re
+
+_CHUNK = r"(?:_part_?\d+|_split_\d+m-\d+m(?:\d+s)?|_trim_\d+|-\d+min_clips_\d+|_\d+-\d+m|-\d{3}|_\d+|\d{8})"
+# yt-dlp's "[id]" at the end of a name, maybe followed by the part of a split recording.
+_YOUTUBE_ID = _re.compile(r"\[([A-Za-z0-9_-]{11})\]\s*(?:\([^)]*\))?\s*" + _CHUNK + r"?\s*(?:\.[A-Za-z0-9]{2,5})?\Z")
+# The fingerprinter's own downloads: "file-<title>-<id>.mp3", whole or in parts.
+_FILE_PREFIXED = _re.compile(r"^file-.*-([A-Za-z0-9_-]{11})(?:_part\d+|_split_\d+m-\d+m(?:\d+s)?|_\d+-\d+m|-\d{3})?\.[A-Za-z0-9]{2,5}\Z")
+# FPDbase (PotloodPKLZ) glues the id onto the title: "<Title><year><id>_<NNN>.mp3".
+_GLUED_ID = _re.compile(r"([A-Za-z0-9_-]{11})_\d{3}\.[A-Za-z0-9]{2,5}\Z")
+_WATZATSONG_ID = _re.compile(r"^WZS(\d+)(?:-[a-z]+)?\.[A-Za-z0-9]+\Z", _re.I)
+_WATZATSONG_DOWNLOAD = _re.compile(r"^wzs-(\d{1,12}) - ", _re.I)
+# "<id> - <title>": weak on its own (usually an artist), so it needs more evidence.
+_LEADING_ID = _re.compile(r"^(?!file-)([A-Za-z0-9_-]{11}) - ", _re.I)
+_WORDS_NOT_ID = _re.compile(r"^(?:[A-Za-z]?\d{1,3}|[a-z]+|[A-Z][a-z]+)[-_.]?[A-Z]?[a-z]+\Z")
+_ACIDPLANET_ITEM = _re.compile(r"(acidplanet-audio-\d{6,})", _re.I)
+_AUDIOJUNGLE = _re.compile(r"[?&](\d{5,})_([a-z0-9-]+?)_by_[A-Za-z0-9_-]+\Z", _re.I)
+# yt-dlp names a Mixcloud show "<title> [<user>_<slug>]".
+_MIXCLOUD_ID = _re.compile(r"\[([A-Za-z0-9_-]+)_((?:[^\W_]|-)+)\]")
+_SOUNDCLOUD_FOLDER = _re.compile(r"(?:^|/)soundcloud-(\d{6,12})(?:/|\Z)", _re.I)
+_SOUNDCLOUD_USER = _re.compile(r"(?:^|/)soundcloud--([A-Za-z0-9_-]+)(?:/|\Z)", _re.I)
+_NUMERIC_BRACKET = _re.compile(r"\[(\d{6,12})\]")
+_NUMERIC_NAME = _re.compile(r"^(\d{4,})\.[A-Za-z0-9]+\Z")
+_SOUNDCLICK_ID = _re.compile(r"ID\[(\d+)\]")
+_CHANNEL_ID = _re.compile(r"(UC[A-Za-z0-9_-]{22})(?=\Z|[^A-Za-z0-9_-]|[-_]\d)")
+# A table named for a channel handle: "@mauropiffero1-4.pklz" (only the shard number comes off).
+_HANDLE_SHARD = _re.compile(r"^(@[A-Za-z0-9_.-]+?)(?:-\d+)?\Z")
+_WAYBACK = _re.compile(r"web\.archive\.org/web/([0-9]{4,14}(?:[a-z_]{2,3})?)/(https?)_/(.+)\Z", _re.I)
+_IA_ITEM = _re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]{3,})/")
+_YTDLP_FORMAT = _re.compile(r"\((?:\d+kbit_[A-Za-z0-9]+|\d+k)\)")
+# yt-dlp's default template "<title>-<id>": only trusted with more evidence.
+_YOUTUBE_TRAILING_ID = _re.compile(r"-([A-Za-z0-9_-]{11})(?:_\d+)?\.[A-Za-z0-9]{2,5}\Z")
+_YTDLP_DUMP = _re.compile(r"(?:^|/)yt-dlp(?:\Z|/)", _re.I)
+# The lookalikes yt-dlp writes for characters Windows forbids in a file name.
+_YTDLP_SUBSTITUTE = _re.compile("[\u29f8\uff02\uff1f\uff5c\uff1a\uff0a\uff1c\uff1e]")
+_BLOGSPOT_DOMAIN = _re.compile(r"([a-z0-9][a-z0-9-]*)\.(blogspot|eklablog)\.com", _re.I)
+_BLOGSPOT_FOLDER = _re.compile(r"^(.+?)[ _-]blogspot\Z", _re.I)
+_ARCHIVE_ORG_FOLDER = _re.compile(r"(?:^|/)archive\.org/(?:archiveorg--)?([^/]{4,})/", _re.I)
+_FMA_NAME = _re.compile(r"^(.+?)_-_")
+_GENERIC_FOLDER = _re.compile(r"^(?:various|va|disc\s*\d*|cd\s*\d*|mp3s?|audio|tracks?|untitled)\Z", _re.I)
+
+
+def _norm(value):
+    return str(value or "").strip()
+
+
+def _uri(value):
+    """ JavaScript's encodeURIComponent. """
+    from urllib.parse import quote
+    return quote(value, safe="!~*'()")
+
+
+def _word_like(token):
+    return (bool(_re.fullmatch(r"[A-Za-z]+", token)) and len(_re.findall(r"[aeiouy]", token, _re.I)) >= 3
+            and not _re.search(r"[^aeiouy]{5}", token, _re.I))
+
+
+def _bracket_id_ok(token):
+    return bool(_re.search(r"[0-9_-]", token)) or bool(_re.search(r"[A-Z]", token[1:])) or not _word_like(token)
+
+
+def _id_like(token):
+    return bool(_re.search(r"[0-9_-]", token) and _re.search(r"[A-Z]", token) and _re.search(r"[a-z]", token))
+
+
+def _id_like_loose(token):
+    return _id_like(token) or (bool(_re.search(r"[a-z]", token)) and len(_re.findall(r"[A-Z]", token[1:])) >= 2)
+
+
+def _letters(value):
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFKC", _norm(value)).lower() if ch.isalnum())
+
+
+def _shard_family(pklz):
+    family = _re.sub(r"\.pklz\Z", "", _norm(pklz), flags=_re.I)
+    return _re.sub(r"[-_ ]?#?\d+(?:[-_]\d+)*\Z", "", family).strip()
+
+
+def _starts(value, prefix):
+    return _norm(value).lower().startswith(prefix.lower())
+
+
+def _searchable_title(matched):
+    title = _re.sub(r"\.[A-Za-z0-9]{2,5}\Z", "", _norm(matched), count=1)
+    title = _re.sub(r"\[[A-Za-z0-9_-]{11}\]", "", title)
+    title = _re.sub(r"\((?:\d+kbit_[A-Za-z0-9]+|\d+k)\)", "", title)
+    title = _re.sub(r"_\d+\Z", "", title, count=1)
+    for lookalike, real in (("\uff02", '"'), ("\uff1f", "?"), ("\uff5c", "|"), ("\u29f8", "/"), ("\u2044", "/")):
+        title = title.replace(lookalike, real)
+    return _re.sub(r"\s+", " ", title).strip()
+
+
+def _link(url, kind, tier, label):
+    return {"url": url, "kind": kind, "tier": tier, "label": label}
+
+
+def source_link_of(pklz, matched, matched_path):
+    """ sourceLink(pklz, matched, matchedPath) of sourcelink.js: pklz is the table's file
+        name, matched the entry's file name, matched_path the name as the table stores it. """
+    name = _norm(matched)
+    path = _norm(matched_path).replace("\\", "/")
+    shard = _norm(pklz)
+    family = _shard_family(shard)
+    if not name and not path:
+        return None
+
+    def youtube(video):
+        return _link("https://youtu.be/%s" % video, "youtube", "exact", "YouTube")
+
+    # exact: an id that names this specific track
+    m = _YOUTUBE_ID.search(name)
+    if m and _bracket_id_ok(m.group(1)):
+        return youtube(m.group(1))
+    m = _FILE_PREFIXED.search(name)
+    if m and _bracket_id_ok(m.group(1)):
+        return youtube(m.group(1))
+    m = _WATZATSONG_ID.search(name) or _WATZATSONG_DOWNLOAD.search(name)
+    if m:
+        return _link("https://www.watzatsong.com/en/name-that-tune/%s.html" % m.group(1), "watzatsong", "exact", "WatZatSong")
+    m = _LEADING_ID.search(name)
+    if m and _YTDLP_SUBSTITUTE.search(name) and _re.search(r"\d", m.group(1)) and _id_like(m.group(1)) and not _WORDS_NOT_ID.search(m.group(1)):
+        return youtube(m.group(1))
+    m = _SOUNDCLICK_ID.search(name)
+    if m and (_starts(family, "soundclick") or _re.search("soundclick", path, _re.I)):
+        return _link("https://www.soundclick.com/music/songInfo.cfm?songID=%s" % m.group(1), "soundclick", "exact", "SoundClick")
+    m = _NUMERIC_NAME.search(name)
+    if m and (_starts(family, "reverbnation") or _re.search("reverbnation", path, _re.I)):
+        return _link("https://legacy.reverbnation.com/open_graph/song/%s" % m.group(1), "reverbnation", "exact", "ReverbNation")
+    m = _WAYBACK.search(path)
+    if m:
+        return _link("https://web.archive.org/web/%s/%s://%s" % (m.group(1), m.group(2).lower(), m.group(3)), "wayback", "exact", "Wayback Machine")
+    m = (_AUDIOJUNGLE.search(path) or _AUDIOJUNGLE.search(name)) if _re.search(r"envato\.com|audiojungle", "%s %s" % (path, shard), _re.I) else None
+    if m:
+        return _link("https://audiojungle.net/item/%s/%s" % (m.group(2).lower(), m.group(1)), "audiojungle", "exact", "AudioJungle")
+    m = _ACIDPLANET_ITEM.search(path) or _ACIDPLANET_ITEM.search(name)
+    if m:
+        return _link("https://archive.org/details/%s" % m.group(1).lower(), "archive", "exact", "Internet Archive")
+    mixes = list(_MIXCLOUD_ID.finditer(name))
+    if mixes:
+        mix = mixes[-1]
+        title = _re.sub(r"^(?:5m_Clips-|mixcloud_)", "", name[:mix.start()], flags=_re.I)
+        spelled = _letters(title) != "" and _letters(title) == _letters(mix.group(2))
+        if spelled or _re.search(r"mixcloud|(?:^|/)mixc-", path, _re.I):
+            return _link("https://www.mixcloud.com/%s/%s/" % (mix.group(1), _uri(mix.group(2))), "mixcloud", "exact", "Mixcloud")
+    folders = path[:path.rfind("/")] if "/" in path else ""
+    sc_folder = _SOUNDCLOUD_FOLDER.search(folders)
+    where = "%s %s" % (folders, shard)
+    sc_bracket = _NUMERIC_BRACKET.search(name) if _re.search("soundcloud", where, _re.I) and not _re.search("bandcamp", where, _re.I) else None
+    sc_id = (sc_folder and sc_folder.group(1)) or (sc_bracket and sc_bracket.group(1))
+    if sc_id:
+        return _link("https://w.soundcloud.com/player/?url=https%%3A//api.soundcloud.com/tracks/%s" % sc_id, "soundcloud", "exact", "SoundCloud")
+    if _starts(family, "fpdbase") or _re.search("potloodpklz", path, _re.I):
+        m = _GLUED_ID.search(name)
+        if m and _bracket_id_ok(m.group(1)):
+            return youtube(m.group(1))
+    m = _YOUTUBE_TRAILING_ID.search(name)
+    if m:
+        if _YTDLP_DUMP.search(path) and _id_like_loose(m.group(1)):
+            return youtube(m.group(1))
+        if _YTDLP_SUBSTITUTE.search(name) and _id_like(m.group(1)):
+            return youtube(m.group(1))
+
+    # source: the channel or collection, when no track id survives
+    if _starts(family, "ia-") and path and not _re.match(r"[A-Za-z]:/", path) and not path.startswith("/"):
+        m = _IA_ITEM.search(path)
+        if m:
+            return _link("https://archive.org/details/%s" % m.group(1), "archive", "source", "Internet Archive")
+    if _re.search(r"myspace[_ ]?dragon[_ ]?hoard", shard, _re.I) or _re.search("myspace_dragon_hoard", path, _re.I):
+        return _link("https://archive.org/details/myspace_dragon_hoard_2010", "myspace", "source", "MySpace Dragon Hoard")
+    m = _CHANNEL_ID.search(path) or _CHANNEL_ID.search(shard)
+    if m:
+        return _link("https://www.youtube.com/channel/%s" % m.group(1), "youtube-channel", "source", "YouTube channel")
+    m = _HANDLE_SHARD.search(_re.sub(r"\.pklz\Z", "", shard, flags=_re.I))
+    if m:
+        return _link("https://www.youtube.com/%s" % m.group(1), "youtube-channel", "source", "YouTube channel")
+    m = _SOUNDCLOUD_USER.search(path)
+    if m:
+        return _link("https://soundcloud.com/%s" % m.group(1), "soundcloud-user", "source", "SoundCloud")
+
+    # search: platform known, track not
+    title = _searchable_title(name)
+    segments = [s for s in path.split("/") if s]
+    stated = next((s for s in segments if _BLOGSPOT_DOMAIN.search(s)), None)
+    named = next((s for s in segments if _BLOGSPOT_FOLDER.search(s)), None)
+    blog = stated or named
+    if blog:
+        domain = _BLOGSPOT_DOMAIN.search(blog)
+        folder = _BLOGSPOT_FOLDER.search(blog)
+        host = ("%s.%s.com" % (domain.group(1).lower(), domain.group(2).lower()) if domain
+                else "%s.blogspot.com" % _re.sub(r"[^a-z0-9-]+", "", folder.group(1).lower()))
+        raw_parent = segments[-2] if len(segments) > 1 else ""
+        parent = _re.sub(r"[\[(]\s*[a-z0-9-]+\.(?:blogspot|eklablog)\.com\s*[\])]", "", raw_parent, flags=_re.I)
+        parent = _re.sub(r"[a-z0-9-]+\.(?:blogspot|eklablog)\.com", "", parent, flags=_re.I)
+        parent = _re.sub(r"\s{2,}", " ", parent).strip()
+        use_parent = bool(parent) and parent != named and len(parent) >= 4 and not _GENERIC_FOLDER.search(parent)
+        needle = parent if use_parent else title
+        if host and needle:
+            return _link("https://%s/search?q=%s" % (host, _uri(needle)), "blogspot", "search", "blog search")
+    m = _ARCHIVE_ORG_FOLDER.search(path)
+    if m:
+        words = _re.sub(r"\s+", " ", _re.sub(r"[_-]+", " ", m.group(1))).strip()
+        if words:
+            return _link("https://archive.org/search?query=%s" % _uri(words), "archive-search", "search", "Internet Archive search")
+    if not title:
+        return None
+    if _starts(family, "freemusicarchive") or _re.search("freemusicarchive", path, _re.I):
+        m = _FMA_NAME.search(name)
+        artist = _re.sub(r"\s+", " ", (m.group(1) if m else title).replace("_", " ")).strip()
+        if artist:
+            return _link("https://freemusicarchive.org/search?quicksearch=%s" % _uri(artist), "fma-search", "search", "Free Music Archive search")
+    if _starts(family, "bandcamp") or _re.search("bandcamp", path, _re.I):
+        return _link("https://bandcamp.com/search?q=%s" % _uri(title), "bandcamp", "search", "Bandcamp search")
+    if _YTDLP_FORMAT.search(name):
+        return _link("https://www.youtube.com/results?search_query=%s" % _uri(title), "youtube-search", "search", "YouTube search")
+    return None
+
+
+def source_link(table, entry):
+    """ Where entry <entry> of table <table> (a path or a file name) came from, or None. """
+    if not entry:
+        return None
+    stored = str(entry)
+    return source_link_of(os.path.basename(str(table or "")), _re.split(r"[\\/]", stored)[-1], stored)
+
+
+TIER_NOTE = {"exact": "", "source": " (where it came from, not the track itself)", "search": " (a search: no id survives)"}
 
 
 # ── The hashes of each entry ────────────────────────────────────────────────
@@ -448,6 +691,10 @@ class HashWindow(object):
         head.pack(fill="x")
         self.title_label = ttk.Label(head, text="", font=("Segoe UI", 11, "bold"))
         self.title_label.pack(anchor="w")
+        self.link = None
+        self.source_label = ttk.Label(head, text="", foreground="#0b5cad", cursor="hand2")
+        self.source_label.pack(anchor="w")
+        self.source_label.bind("<Button-1>", lambda e: self.open_source())
         self.facts_label = ttk.Label(head, text="", justify="left", wraplength=1150)
         self.facts_label.pack(anchor="w", pady=(3, 0))
         bar = ttk.Frame(top, padding=(10, 6))
@@ -484,11 +731,13 @@ class HashWindow(object):
 
     # entries
 
-    def show(self, k, name):
+    def show(self, k, name, link=None):
         self.entry = (k, name)
         label = name or "(removed entry)"
         self.top.title("Hashes - %s" % os.path.basename(label.replace("\\", "/")))
         self.title_label.configure(text="%s   ·   entry #%s" % (label, "{:,}".format(k + 1)))
+        self.link = link
+        self.source_label.configure(text="Source: %s%s   %s" % (link["label"], TIER_NOTE.get(link["tier"], ""), link["url"]) if link else "")
         if self.index is None:
             self.facts_label.configure(text="")
             self.message("Reading the hashes of every entry in this table (once per file)...")
@@ -622,6 +871,11 @@ class HashWindow(object):
                     " (its bucket keeps %d)" % self.index.depth if count > self.index.depth else "")
         self.status.configure(text=text)
 
+    def open_source(self):
+        if self.link:
+            import webbrowser
+            webbrowser.open(self.link["url"])
+
     # saving
 
     def save_picture(self):
@@ -702,7 +956,7 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
     root = tk.Tk()
     root.title("PKLZ Viewer")
     root.geometry("980x640")
-    state = {"tracks": [], "ok": None, "path": None}
+    state = {"tracks": [], "links": [], "ok": None, "path": None}
     hashes = {"path": None, "index": None, "waiting": [], "building": False}   # this file's HashIndex
     shown = {"window": None}                                                  # the hashes window, when open
 
@@ -723,11 +977,12 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
     ttk.Button(bar, text="Open...", command=lambda: choose()).pack(side="right")
     ttk.Button(bar, text="Copy track list", command=lambda: copy()).pack(side="right", padx=6)
     ttk.Button(bar, text="Show hashes", command=lambda: show_hashes()).pack(side="right")
+    ttk.Button(bar, text="Open source", command=lambda: open_source()).pack(side="right", padx=6)
 
     body = ttk.Frame(root, padding=8)
     body.pack(fill="both", expand=True)
-    tree = ttk.Treeview(body, columns=("n", "name", "hashes"), show="headings")
-    for col, text, width, anchor in (("n", "#", 60, "e"), ("name", "Track", 740, "w"), ("hashes", "Hashes", 100, "e")):
+    tree = ttk.Treeview(body, columns=("n", "name", "source", "hashes"), show="headings")
+    for col, text, width, anchor in (("n", "#", 60, "e"), ("name", "Track", 620, "w"), ("source", "Source", 150, "w"), ("hashes", "Hashes", 100, "e")):
         tree.heading(col, text=text, command=lambda c=col: sort(c))
         tree.column(col, width=width, anchor=anchor, stretch=(col == "name"))
     scroll = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
@@ -742,15 +997,22 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
         summary.insert("1.0", text)
         summary.configure(state="disabled")
 
+    def link_of(k):
+        links = state["links"]
+        return links[k] if k is not None and 0 <= k < len(links) else None
+
+    def show_count():
+        count_label.configure(text="%d of %d tracks" % (len(tree.get_children()), len(state["tracks"])))
+
     def fill(*_):
         text = needle.get().lower()
-        rows = [t for t in state["tracks"] if text in t[1].lower()]
-        index = {"n": 0, "name": 1, "hashes": 2}[order["col"]]
-        rows.sort(key=lambda t: t[index].lower() if index == 1 else t[index], reverse=order["down"])
+        rows = [(n, name, made, (link_of(n - 1) or {}).get("label", "")) for n, name, made in state["tracks"] if text in name.lower()]
+        index = {"n": 0, "name": 1, "hashes": 2, "source": 3}[order["col"]]
+        rows.sort(key=lambda t: t[index].lower() if index in (1, 3) else t[index], reverse=order["down"])
         tree.delete(*tree.get_children())
-        for n, name, hashes_made in rows:
-            tree.insert("", "end", values=(n, name or "(removed)", "{:,}".format(hashes_made)))
-        count_label.configure(text="%d of %d tracks" % (len(rows), len(state["tracks"])))
+        for n, name, hashes_made, label in rows:
+            tree.insert("", "end", values=(n, name or "(removed)", label, "{:,}".format(hashes_made)))
+        show_count()
 
     def sort(col):
         order["down"] = (not order["down"]) if order["col"] == col else (col == "hashes")
@@ -760,6 +1022,45 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
     def copy():
         root.clipboard_clear()
         root.clipboard_append("\n".join(tree.item(i, "values")[1] for i in tree.get_children()))
+
+    def copy_text(text):
+        root.clipboard_clear()
+        root.clipboard_append(text)
+
+    def open_source(*_):
+        k = selected_entry()
+        link = link_of(k)
+        if link is None:
+            count_label.configure(text="Select an entry first" if k is None else "No source is known for this entry")
+            root.after(3000, show_count)
+            return
+        import webbrowser
+        webbrowser.open(link["url"])
+
+    menu = tk.Menu(root, tearoff=0)
+
+    def popup(event):
+        row = tree.identify_row(event.y)
+        if not row:
+            return
+        tree.selection_set(row)
+        tree.focus(row)
+        k = selected_entry()
+        if k is None:
+            return
+        link = link_of(k)
+        menu.delete(0, "end")
+        if link:
+            menu.add_command(label="Open source (%s)" % link["label"], command=open_source)
+            menu.add_command(label="Copy source link", command=lambda: copy_text(link["url"]))
+        else:
+            menu.add_command(label="No source known", state="disabled")
+        menu.add_separator()
+        menu.add_command(label="Show hashes", command=show_hashes)
+        menu.add_command(label="Copy name", command=lambda: copy_text(state["tracks"][k][1]))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    tree.bind("<Button-3>", popup)
 
     # The hashes window: built on demand, follows the selection.
 
@@ -823,7 +1124,7 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
             k = selected_entry()
         if shown["window"] is None:
             shown["window"] = HashWindow(root, with_hashes, step, lambda: shown.update(window=None))
-        shown["window"].show(k, state["tracks"][k][1])
+        shown["window"].show(k, state["tracks"][k][1], link_of(k))
         shown["window"].top.lift()
 
     def double_click(event):
@@ -834,7 +1135,7 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
         if shown["window"] is not None:
             k = selected_entry()
             if k is not None:
-                shown["window"].show(k, state["tracks"][k][1])
+                shown["window"].show(k, state["tracks"][k][1], link_of(k))
 
     tree.bind("<Double-Button-1>", double_click)
     tree.bind("<Return>", show_hashes)
@@ -845,9 +1146,10 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
             state["ok"] = False
             set_summary("Could not open this file:\n%s" % error)
         else:
-            info, tracks = result
+            info, tracks, links = result
             state["ok"] = True
             state["tracks"] = tracks
+            state["links"] = links
             set_summary("\n".join("%s: %s" % kv for kv in info.items()))
             fill()
             if hash_test is not None:
@@ -861,13 +1163,16 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
         if shown["window"] is not None:
             shown["window"].close()
         state["tracks"] = []
+        state["links"] = []
         state["ok"] = None
         state["path"] = target
         fill()
 
         def work():
             try:
-                result, error = read_pklz(target), None
+                info, tracks = read_pklz(target)
+                links = [source_link(target, name) for _, name, _ in tracks]
+                result, error = (info, tracks, links), None
             except Exception as problem:
                 result, error = None, "%s: %s" % (type(problem).__name__, problem)
             root.after(0, loaded, result, error)
@@ -922,6 +1227,15 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
         window.top.update()
 
         def shoot():
+            try:
+                grab()
+            except OSError as problem:
+                hash_test["shot_error"] = "no screenshot (%s: the screen may be locked)" % problem
+            drawn_before = window.drawn
+            step(1)
+            root.after(400, finish, drawn_before)
+
+        def grab():
             if hash_test.get("shot"):
                 from PIL import ImageGrab
                 w = window.top
@@ -933,11 +1247,20 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
                 root.update()
                 box = (root.winfo_rootx(), root.winfo_rooty(), root.winfo_rootx() + root.winfo_width(), root.winfo_rooty() + root.winfo_height())
                 ImageGrab.grab(bbox=box, all_screens=True).save(os.path.splitext(hash_test["shot"])[0] + "-main.png")
-            drawn_before = window.drawn
-            step(1)
-            root.after(400, finish, drawn_before)
 
         def finish(drawn_before):
+            # "Open source", from the main window's button and from the hashes window's link, with the
+            # browser left out: only the addresses that would have been opened are noted.
+            import webbrowser
+            opened = []
+            real_open = webbrowser.open
+            webbrowser.open = lambda url, *a, **kw: opened.append(url) or True
+            try:
+                open_source()
+                window.open_source()
+            finally:
+                webbrowser.open = real_open
+            hash_test["source"] = "%s | would open: %s" % (window.source_label.cget("text") or "(no source line)", ", ".join(opened) or "nothing")
             moved = window.entry[0] if window.entry else None
             hash_test["result"] = "entry #%d: %d of %d hashes kept, whole view %.1f-%.1f s, zoomed to %.1f-%.1f s, " \
                                   "Down moved to entry #%s (%s, %d more drawing(s)), picture %dx%d" % (
@@ -957,6 +1280,22 @@ def run_gui(path, close_when_loaded=False, hash_test=None):
 
 
 def main(argv):
+    try:
+        # Entry names hold characters a Windows console cannot show (yt-dlp's lookalikes).
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+    if argv[:1] == ["--sources"]:
+        for path in argv[1:]:
+            _, tracks = read_pklz(path)
+            found = 0
+            for n, name, _ in tracks:
+                link = source_link(path, name)
+                if link:
+                    found += 1
+                    print("%d\t%s\t%s\t%s" % (n, link["label"], link["url"], name))
+            print("# %s: %d of %d entries have a source link" % (os.path.basename(path), found, len(tracks)))
+        return
     if argv[:1] == ["--register"]:
         return register()
     if argv[:1] == ["--unregister"]:
@@ -986,6 +1325,9 @@ def main(argv):
         facts = entry_facts(index, k, times, entry_hashes)
         title = "%s   ·   entry #%s" % (index.names[k] or "(removed entry)", "{:,}".format(k + 1))
         print(title)
+        link = source_link(argv[1], index.names[k])
+        if link:
+            print("source: %s%s %s" % (link["label"], TIER_NOTE.get(link["tier"], ""), link["url"]))
         print(facts_text(index, facts))
         if len(argv) > 3:
             header = ["%s   ·   %s" % (title, os.path.basename(argv[1]))] + facts_text(index, facts).split("\n")
@@ -1003,6 +1345,9 @@ def main(argv):
         print("hash window test: %s" % test.get("result", "did not finish"))
         print("  moves: %s" % test.get("moves", "-"))
         print("  pointer read-out: %s" % test.get("pointer", "-"))
+        print("  source: %s" % test.get("source", "-"))
+        if test.get("shot_error"):
+            print("  %s" % test["shot_error"])
         return
     run_gui(argv[0] if argv else None)
 
